@@ -18,6 +18,19 @@ from supplier_risk import (
     compute_supplier_risk_scores,
     load_supplier_dataset,
 )
+# Import forecasting functions with error handling
+try:
+    from forex_forecast import forecast_next_rate, load_model_bundle, ArtefactMissingError
+    FORECASTING_AVAILABLE = True
+except Exception as e:
+    FORECASTING_AVAILABLE = False
+    # Create dummy functions to prevent errors
+    def forecast_next_rate(*args, **kwargs):
+        raise ImportError("Forecasting not available - TensorFlow error")
+    def load_model_bundle(*args, **kwargs):
+        raise ImportError("Forecasting not available - TensorFlow error")
+    class ArtefactMissingError(Exception):
+        pass
 
 # Page configuration
 st.set_page_config(
@@ -36,7 +49,7 @@ st.markdown("Monitor raw material costs, score supplier reliability, and get sma
 st.sidebar.title("Navigation")
 page = st.sidebar.selectbox(
     "Choose a page",
-    ["Dashboard", "Price Monitoring", "News Headlines", "Supplier Analysis", "Risk Alerts", "Recommendations"]
+    ["Dashboard", "Price Monitoring", "News Headlines", "Supplier Analysis", "Risk Alerts", "Recommendations", "Forex Forecasting"]
 )
 
 # Main content area
@@ -807,6 +820,300 @@ elif page == "Recommendations":
     
     # Placeholder for recommendations content
     st.info("Recommendations functionality will be implemented here")
+
+elif page == "Forex Forecasting":
+    st.header("🔮 Forex Forecasting")
+    st.markdown("AI-powered exchange rate predictions using LSTM neural networks")
+    
+    # Check if forecasting is available
+    if not FORECASTING_AVAILABLE:
+        st.error("❌ Forecasting not available")
+        st.warning("""
+        **TensorFlow is required for forecasting functionality.**
+        
+        There seems to be an issue with TensorFlow. To fix this:
+        1. Try reinstalling TensorFlow:
+           ```bash
+           pip uninstall tensorflow
+           pip install tensorflow
+           ```
+        2. Or try the Apple Silicon optimized version:
+           ```bash
+           pip install tensorflow-macos tensorflow-metal
+           ```
+        3. Restart the Streamlit app
+        """)
+        st.stop()
+    
+    # Sidebar controls for forecasting
+    st.sidebar.subheader("🔧 Forecasting Controls")
+    
+    # Currency selection
+    available_currencies = ['USD', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'BRL', 'MXN']
+    selected_currency = st.sidebar.selectbox(
+        "Target Currency",
+        options=available_currencies,
+        index=0,
+        help="Currency to forecast against EUR base"
+    )
+    
+    # Forecast horizon
+    forecast_days = st.sidebar.slider(
+        "Forecast Horizon (days)",
+        min_value=1,
+        max_value=30,
+        value=7,
+        help="Number of days to forecast ahead"
+    )
+    
+    # Confidence level
+    confidence_level = st.sidebar.selectbox(
+        "Confidence Level",
+        options=[0.68, 0.80, 0.90, 0.95],
+        index=2,
+        format_func=lambda x: f"{int(x*100)}%",
+        help="Statistical confidence level for prediction intervals"
+    )
+    
+    # Model retraining option
+    retrain_model = st.sidebar.checkbox(
+        "Retrain Model",
+        value=False,
+        help="Retrain the LSTM model with latest data (may take a few minutes)"
+    )
+    
+    # Main forecasting content
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.subheader(f"📈 {selected_currency}/EUR Forecast")
+    
+    with col2:
+        if st.button("🔄 Generate Forecast", type="primary"):
+            st.rerun()
+    
+    with col3:
+        if st.button("📊 Model Info"):
+            st.rerun()
+    
+    # Check if model artifacts exist
+    from pathlib import Path
+    model_path = Path("models/forex_lstm.keras")
+    scaler_path = Path("models/forex_scaler.pkl")
+    
+    try:
+        # Load model bundle to check if artifacts exist
+        model, scaler, metadata = load_model_bundle(
+            model_path=model_path,
+            scaler_path=scaler_path,
+            auto_train=False
+        )
+        
+        # Display model information
+        with st.expander("ℹ️ Model Information", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Lookback Window", f"{metadata.get('lookback', 30)} days")
+            with col2:
+                st.metric("Training Samples", f"{metadata.get('training_rows', 'Unknown')}")
+            with col3:
+                st.metric("Base Currency", metadata.get('base_currency', 'EUR'))
+        
+        # Generate forecast
+        with st.spinner(f"Generating {forecast_days}-day forecast for {selected_currency}/EUR..."):
+            try:
+                forecast_result = forecast_next_rate(
+                    steps=forecast_days,
+                    model_path=model_path,
+                    scaler_path=scaler_path,
+                    auto_train=retrain_model
+                )
+                
+                # Check if the forecast is for the selected currency
+                if forecast_result.get('currency') != selected_currency:
+                    st.warning(f"⚠️ Model was trained for {forecast_result.get('currency')}, but you selected {selected_currency}. Consider retraining the model for {selected_currency}.")
+                
+                # Display current rate and immediate forecast
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Current Rate",
+                        f"{forecast_result['last_observation']:.4f}",
+                        help=f"Last observed rate on {forecast_result['last_observation_date']}"
+                    )
+                
+                with col2:
+                    next_day_forecast = forecast_result['predictions'][0]
+                    change = next_day_forecast - forecast_result['last_observation']
+                    change_pct = (change / forecast_result['last_observation']) * 100
+                    st.metric(
+                        "Next Day Forecast",
+                        f"{next_day_forecast:.4f}",
+                        delta=f"{change:+.4f} ({change_pct:+.2f}%)"
+                    )
+                
+                with col3:
+                    if len(forecast_result['predictions']) > 6:
+                        week_forecast = forecast_result['predictions'][6]
+                        week_change = week_forecast - forecast_result['last_observation']
+                        week_change_pct = (week_change / forecast_result['last_observation']) * 100
+                        st.metric(
+                            "1 Week Forecast",
+                            f"{week_forecast:.4f}",
+                            delta=f"{week_change:+.4f} ({week_change_pct:+.2f}%)"
+                        )
+                    else:
+                        st.metric("1 Week Forecast", "N/A")
+                
+                with col4:
+                    final_forecast = forecast_result['predictions'][-1]
+                    total_change = final_forecast - forecast_result['last_observation']
+                    total_change_pct = (total_change / forecast_result['last_observation']) * 100
+                    st.metric(
+                        f"{forecast_days}-Day Forecast",
+                        f"{final_forecast:.4f}",
+                        delta=f"{total_change:+.4f} ({total_change_pct:+.2f}%)"
+                    )
+                
+                # Create forecast chart
+                st.subheader("📊 Forecast Visualization")
+                
+                # Generate dates for forecast
+                from datetime import datetime, timedelta
+                last_date = datetime.strptime(forecast_result['last_observation_date'], '%Y-%m-%d')
+                forecast_dates = [last_date + timedelta(days=i+1) for i in range(forecast_days)]
+                
+                # Create DataFrame for plotting
+                forecast_df = pd.DataFrame({
+                    'date': forecast_dates,
+                    'predicted_rate': forecast_result['predictions'],
+                    'forecast_type': 'Forecast'
+                })
+                
+                # Add historical context (last 30 days)
+                try:
+                    historical_df = pd.read_csv("data/daily_forex_rates.csv", parse_dates=["date"])
+                    hist_filtered = historical_df[
+                        (historical_df["currency"] == selected_currency) & 
+                        (historical_df["base_currency"] == "EUR")
+                    ].sort_values("date").tail(30)
+                    
+                    if not hist_filtered.empty:
+                        hist_df = pd.DataFrame({
+                            'date': hist_filtered['date'],
+                            'predicted_rate': hist_filtered['exchange_rate'],
+                            'forecast_type': 'Historical'
+                        })
+                        
+                        # Combine historical and forecast data
+                        combined_df = pd.concat([hist_df, forecast_df], ignore_index=True)
+                        
+                        # Create interactive chart
+                        fig = px.line(
+                            combined_df,
+                            x='date',
+                            y='predicted_rate',
+                            color='forecast_type',
+                            title=f"{selected_currency}/EUR Exchange Rate Forecast",
+                            labels={'predicted_rate': 'Exchange Rate', 'date': 'Date'},
+                            color_discrete_map={'Historical': '#1f77b4', 'Forecast': '#ff7f0e'}
+                        )
+                        
+                        # Add vertical line to separate historical from forecast
+                        fig.add_vline(
+                            x=last_date,
+                            line_dash="dash",
+                            line_color="red",
+                            annotation_text="Forecast Start"
+                        )
+                        
+                        fig.update_layout(
+                            xaxis_title="Date",
+                            yaxis_title=f"{selected_currency}/EUR Rate",
+                            hovermode='x unified',
+                            height=500
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        # Just show forecast if no historical data
+                        fig = px.line(
+                            forecast_df,
+                            x='date',
+                            y='predicted_rate',
+                            title=f"{selected_currency}/EUR Exchange Rate Forecast",
+                            labels={'predicted_rate': 'Exchange Rate', 'date': 'Date'}
+                        )
+                        fig.update_layout(height=500)
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                except Exception as e:
+                    st.warning(f"Could not load historical data: {e}")
+                    # Just show forecast
+                    fig = px.line(
+                        forecast_df,
+                        x='date',
+                        y='predicted_rate',
+                        title=f"{selected_currency}/EUR Exchange Rate Forecast",
+                        labels={'predicted_rate': 'Exchange Rate', 'date': 'Date'}
+                    )
+                    fig.update_layout(height=500)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Detailed forecast table
+                st.subheader("📋 Detailed Forecast Table")
+                
+                # Create detailed forecast table
+                detailed_df = pd.DataFrame({
+                    'Date': [d.strftime('%Y-%m-%d') for d in forecast_dates],
+                    'Day': [f"Day {i+1}" for i in range(forecast_days)],
+                    'Predicted Rate': [f"{rate:.4f}" for rate in forecast_result['predictions']],
+                    'Change from Current': [f"{rate - forecast_result['last_observation']:+.4f}" for rate in forecast_result['predictions']],
+                    'Change %': [f"{(rate - forecast_result['last_observation']) / forecast_result['last_observation'] * 100:+.2f}%" for rate in forecast_result['predictions']]
+                })
+                
+                st.dataframe(detailed_df, use_container_width=True)
+                
+                # Model confidence and limitations
+                st.subheader("⚠️ Forecast Limitations")
+                st.info("""
+                **Important Notes:**
+                - This forecast is based on historical patterns and may not account for unexpected events
+                - Exchange rates are influenced by many factors including economic news, political events, and market sentiment
+                - Past performance does not guarantee future results
+                - Use this forecast as one input among many for decision-making
+                """)
+                
+            except Exception as e:
+                st.error(f"Forecasting failed: {str(e)}")
+                st.info("Try retraining the model or check if the required data files exist.")
+    
+    except ArtefactMissingError as e:
+        st.error("❌ Model artifacts not found")
+        st.warning(str(e))
+        
+        if st.button("🚀 Train Model Now", type="primary"):
+            with st.spinner("Training LSTM model... This may take a few minutes."):
+                try:
+                    from scripts.train_forex_model import train_and_export_model
+                    train_and_export_model(currency=selected_currency)
+                    st.success("✅ Model trained successfully! Please refresh the page.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Training failed: {str(e)}")
+    
+    except Exception as e:
+        st.error(f"Error loading model: {str(e)}")
+        st.info("Please ensure the model artifacts exist or retrain the model.")
+        
+        # Show more detailed error information
+        with st.expander("🔍 Debug Information"):
+            st.write(f"**Error details:** {str(e)}")
+            st.write(f"**Model path:** {model_path}")
+            st.write(f"**Scaler path:** {scaler_path}")
+            st.write(f"**Model exists:** {model_path.exists()}")
+            st.write(f"**Scaler exists:** {scaler_path.exists()}")
 
 # Footer
 st.markdown("---")
