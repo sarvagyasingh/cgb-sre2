@@ -27,9 +27,10 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
+
 import tensorflow as tf
 
-DEFAULT_DATA_PATH = Path("data/daily_forex_rates.csv")
+DEFAULT_DATA_PATH = Path("data/daily_forex_rates.csv") 
 DEFAULT_MODEL_PATH = Path("models/forex_lstm.keras")
 DEFAULT_SCALER_PATH = Path("models/forex_scaler.pkl")
 DEFAULT_BASE_CURRENCY = "EUR"

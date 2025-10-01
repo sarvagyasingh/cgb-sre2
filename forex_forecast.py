@@ -18,7 +18,32 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow import keras
+
+# Try to import TensorFlow with fallback
+try:
+    from tensorflow import keras
+    TENSORFLOW_AVAILABLE = True
+except Exception as e:
+    TENSORFLOW_AVAILABLE = False
+    # Create a mock keras for when TensorFlow is not available
+    class MockKeras:
+        class Model:
+            def __init__(self, *args, **kwargs):
+                pass
+            def predict(self, *args, **kwargs):
+                raise ImportError("TensorFlow not available")
+            def save(self, *args, **kwargs):
+                raise ImportError("TensorFlow not available")
+        
+        @staticmethod
+        def models():
+            return MockKeras()
+        
+        @staticmethod
+        def load_model(*args, **kwargs):
+            raise ImportError("TensorFlow not available")
+    
+    keras = MockKeras()
 
 DEFAULT_MODEL_PATH = Path("models/forex_lstm.keras")
 DEFAULT_SCALER_PATH = Path("models/forex_scaler.pkl")
@@ -93,6 +118,11 @@ def load_model_bundle(
     training_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[keras.Model, MinMaxScaler, Dict[str, Any]]:
     """Load the trained model, scaler, and metadata required for forecasting."""
+
+    if not TENSORFLOW_AVAILABLE:
+        raise ImportError(
+            "TensorFlow is not available. Please install TensorFlow to use forecasting functionality."
+        )
 
     model_path, scaler_path = ensure_artefacts(
         model_path=model_path,
