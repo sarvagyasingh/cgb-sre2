@@ -89,6 +89,35 @@ OPENEXCHANGERATES_BASE_URL=https://openexchangerates.org/api
 streamlit run app.py
 ```
 
+## Regenerating the Forex Forecast Artefacts
+
+The forecasting utilities in `forex_forecast.py` load a persisted LSTM model
+and scaler from `models/forex_lstm.keras` and `models/forex_scaler.pkl`. These
+files are ignored by Git so every contributor should recreate them locally
+before running features that rely on forex predictions.
+
+1. Install the project dependencies (TensorFlow and scikit-learn are listed in
+   `requirements.txt`):
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. Run the deterministic training script. The example below rebuilds the
+   default EUR→USD model and scaler:
+
+   ```bash
+   python scripts/train_forex_model.py --currency USD
+   ```
+
+   You can adjust the lookback window, number of epochs, or target currency via
+   the CLI flags (see `python scripts/train_forex_model.py --help`).
+
+3. The regenerated artefacts are written to the `models/` directory. Subsequent
+   calls to `forecast_next_rate()` in `forex_forecast.py` will load them
+   automatically. Passing `auto_train=True` will trigger the same export
+   routine if the files are missing.
+
 ## Usage
 
 ### Price Monitoring
@@ -126,13 +155,18 @@ The app integrates with:
 ## File Structure
 
 ```
-├── app.py                 # Main Streamlit application
-├── metals_api.py         # Metals.dev API client
-├── forex_api.py          # Open Exchange Rates API client
-├── news_api.py           # NewsAPI client
-├── requirements.txt      # Python dependencies
-├── .env                  # Environment variables (API keys)
-└── README.md            # This file
+├── app.py                  # Main Streamlit application
+├── forex_api.py            # Open Exchange Rates API client
+├── forex_forecast.py       # Forex LSTM inference helpers
+├── metals_api.py           # Metals.dev API client
+├── news_api.py             # NewsAPI client
+├── requirements.txt        # Python dependencies
+├── scripts/
+│   └── train_forex_model.py  # Deterministic training and export CLI
+├── models/                 # Generated model artefacts (gitignored)
+├── data/                   # Sample datasets
+├── .env                    # Environment variables (API keys)
+└── README.md               # This file
 ```
 
 ## Requirements
