@@ -6,7 +6,18 @@ import plotly.express as px
 import plotly.graph_objects as go
 from metals_api import MetalsAPIClient, format_price_data, format_historical_data
 from forex_api import ForexAPIClient, format_forex_data, format_historical_forex_data
-from news_api import NewsAPIClient, get_demo_news_data
+from news_api import (
+    NewsAPIClient,
+    generate_demo_country_news,
+    get_demo_news_data,
+)
+from supplier_risk import (
+    aggregate_supplier_metrics,
+    build_country_risk_table,
+    compute_country_news_scores,
+    compute_supplier_risk_scores,
+    load_supplier_dataset,
+)
 
 # Page configuration
 st.set_page_config(
@@ -546,10 +557,242 @@ elif page == "News Headlines":
 
 elif page == "Supplier Analysis":
     st.header("🏢 Supplier Analysis")
-    st.markdown("Analyze supplier performance and reliability scores")
-    
-    # Placeholder for supplier analysis content
-    st.info("Supplier analysis functionality will be implemented here")
+    st.markdown("Analyze supplier performance, risk scores, and country-level context")
+
+    @st.cache_data(show_spinner=False)
+    def load_supplier_data() -> pd.DataFrame:
+        return load_supplier_dataset("data/raw_material_suppliers_timeseries.csv")
+
+    supplier_df = load_supplier_data()
+
+    if supplier_df.empty:
+        st.warning("Supplier dataset is empty. Please upload data to view analysis.")
+    else:
+        min_date = supplier_df["order_date"].min().date()
+        max_date = supplier_df["order_date"].max().date()
+
+        st.sidebar.subheader("📅 Supplier Filters")
+        date_range = st.sidebar.date_input(
+            "Order date range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+        )
+
+        country_options = sorted(supplier_df["country"].dropna().unique())
+        selected_countries = st.sidebar.multiselect(
+            "Supplier countries",
+            options=country_options,
+            default=country_options,
+        )
+
+        material_options = sorted(supplier_df["material"].dropna().unique())
+        selected_materials = st.sidebar.multiselect(
+            "Materials",
+            options=material_options,
+            default=material_options[:5] if len(material_options) > 5 else material_options,
+        )
+
+        news_lookback = st.sidebar.slider(
+            "News lookback (days)",
+            min_value=3,
+            max_value=30,
+            value=10,
+            help="Number of days of headlines to include in the country risk signal",
+        )
+
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            start_date = min_date
+            end_date = max_date
+
+        filtered_df = supplier_df[
+            (supplier_df["order_date"] >= pd.Timestamp(start_date))
+            & (supplier_df["order_date"] <= pd.Timestamp(end_date))
+        ]
+
+        if selected_countries:
+            filtered_df = filtered_df[filtered_df["country"].isin(selected_countries)]
+
+        if selected_materials:
+            filtered_df = filtered_df[filtered_df["material"].isin(selected_materials)]
+
+        if filtered_df.empty:
+            st.warning("No supplier records match the selected filters.")
+        else:
+            st.subheader("Supplier performance overview")
+            metrics_df = aggregate_supplier_metrics(filtered_df)
+
+            countries = metrics_df["country"].dropna().unique().tolist()
+            news_client = st.session_state.get("country_news_client")
+            news_error = None
+
+            if news_client is None and countries:
+                try:
+                    news_client = NewsAPIClient()
+                    st.session_state["country_news_client"] = news_client
+                except Exception as exc:  # pragma: no cover - depends on env
+                    news_error = str(exc)
+                    news_client = None
+
+            if countries:
+                with st.spinner("Evaluating country-level news signals..."):
+                    if news_client:
+                        country_news = news_client.get_supply_chain_news_for_countries(
+                            countries, days_back=news_lookback
+                        )
+                    else:
+                        country_news = generate_demo_country_news(countries)
+            else:
+                country_news = {}
+
+            country_news_scores = compute_country_news_scores(country_news)
+            supplier_scores, supplier_results = compute_supplier_risk_scores(
+                metrics_df, country_news_scores
+            )
+
+            avg_risk = supplier_scores["risk_score"].mean()
+            high_risk_count = (supplier_scores["risk_level"] == "High").sum()
+            total_spend = filtered_df["total_price"].sum()
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Average risk score", f"{avg_risk:.1f} / 100")
+            col2.metric("High risk suppliers", int(high_risk_count))
+            col3.metric("Spend in scope", f"${total_spend:,.0f}")
+
+            risk_table = supplier_scores[
+                [
+                    "supplier_name",
+                    "country",
+                    "risk_score",
+                    "risk_level",
+                    "top_factor",
+                    "total_orders",
+                    "total_spend",
+                    "avg_delivery_time",
+                    "on_time_rate",
+                    "defect_rate",
+                    "news_severity",
+                ]
+            ].sort_values("risk_score", ascending=False)
+
+            st.dataframe(
+                risk_table,
+                use_container_width=True,
+                column_config={
+                    "risk_score": st.column_config.NumberColumn("Risk score", format="%.1f"),
+                    "on_time_rate": st.column_config.ProgressColumn(
+                        "On-time rate", format="%.0f%%", min_value=0, max_value=1
+                    ),
+                    "defect_rate": st.column_config.NumberColumn("Defect rate", format="%.2f"),
+                },
+            )
+
+            st.markdown("---")
+
+            st.subheader("Risk breakdown by supplier")
+            supplier_options = [
+                f"{row.supplier_name} ({row.country})" for _, row in supplier_scores.iterrows()
+            ]
+            selection = st.selectbox(
+                "Select a supplier for detailed explainability",
+                options=supplier_options,
+            )
+
+            if selection:
+                selected_index = supplier_options.index(selection)
+                selected_result = supplier_results[selected_index]
+                contributions = selected_result.top_factors
+
+                contrib_fig = go.Figure(
+                    data=[
+                        go.Bar(
+                            x=[factor for factor, _ in contributions],
+                            y=[value for _, value in contributions],
+                            marker_color="#FF7F50",
+                        )
+                    ]
+                )
+                contrib_fig.update_layout(
+                    yaxis_title="Contribution to risk score",
+                    xaxis_title="Risk factor",
+                    height=400,
+                    margin=dict(t=40, b=40, l=20, r=20),
+                )
+                st.plotly_chart(contrib_fig, use_container_width=True)
+
+                st.markdown(
+                    f"**Overall risk score:** {selected_result.risk_score:.1f} / 100 ({selected_result.risk_level})"
+                )
+
+                detail_cols = st.columns(3)
+                detail_cols[0].metric(
+                    "Avg. delivery time (days)", f"{selected_result.metrics['avg_delivery_time']:.1f}"
+                )
+                detail_cols[1].metric(
+                    "On-time delivery",
+                    f"{selected_result.metrics['on_time_rate'] * 100:.1f}%",
+                )
+                detail_cols[2].metric(
+                    "Defect rate", f"{selected_result.metrics['defect_rate'] * 100:.2f}%"
+                )
+
+                st.markdown("**Top contributing risk factors:**")
+                for factor, value in contributions[:3]:
+                    st.markdown(f"- {factor}: {value:.1f} points")
+
+            st.markdown("---")
+            st.subheader("Country-level news signal")
+
+            if news_error:
+                st.info(
+                    "Real-time news could not be loaded: "
+                    f"{news_error}. Displaying demo news stories instead."
+                )
+
+            country_summary = build_country_risk_table(country_news_scores)
+            if not country_summary.empty:
+                st.dataframe(country_summary, use_container_width=True)
+
+            for country in countries:
+                articles = country_news.get(country, [])
+                if not articles:
+                    continue
+                with st.expander(f"{country} headlines", expanded=False):
+                    for article in articles[:3]:
+                        st.markdown(f"**{article.get('title')}**")
+                        if article.get('description'):
+                            st.write(article['description'])
+                        meta_bits = []
+                        if article.get('source'):
+                            meta_bits.append(article['source'] if isinstance(article['source'], str) else article['source'].get('name', ''))
+                        if article.get('publishedAt'):
+                            meta_bits.append(article['publishedAt'])
+                        if meta_bits:
+                            st.caption(" • ".join([bit for bit in meta_bits if bit]))
+                        if article.get('url') and article.get('url') != '#':
+                            st.link_button("Read more", article['url'])
+
+            with st.expander("ℹ️ How the risk score is calculated"):
+                st.markdown(
+                    """
+                    **Explainable supplier risk score**
+
+                    The score ranges from 0 (low risk) to 100 (high risk) and blends five observable
+                    performance signals with a country news adjustment:
+
+                    - Delivery performance (25%) — slower average delivery times increase risk.
+                    - On-time reliability (20%) — missed delivery commitments add risk.
+                    - Quality issues (20%) — higher defect rates raise the score.
+                    - Price volatility (15%) — volatile pricing indicates potential instability.
+                    - Spend concentration (10%) — large wallet share concentrates exposure.
+                    - Country news (10%) — supply-chain related headlines can increase country-level risk.
+
+                    Each component is normalised across the filtered suppliers and converted into
+                    an additive score so you can see which factors drive risk for each supplier.
+                    """
+                )
 
 elif page == "Risk Alerts":
     st.header("⚠️ Risk Alerts")

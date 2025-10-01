@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 try:
     from newsapi import NewsApiClient
@@ -15,6 +15,36 @@ try:
 except ImportError:
     DOTENV_AVAILABLE = False
     load_dotenv = None
+
+COUNTRY_KEYWORDS = [
+    "supply chain",
+    "logistics",
+    "manufacturing",
+    "factory",
+    "port",
+    "strike",
+    "protest",
+    "inflation",
+    "tariff",
+    "shutdown",
+    "disruption",
+]
+
+COUNTRY_TO_ISO = {
+    "united states": "us",
+    "usa": "us",
+    "canada": "ca",
+    "germany": "de",
+    "brazil": "br",
+    "china": "cn",
+    "south africa": "za",
+    "india": "in",
+    "australia": "au",
+    "mexico": "mx",
+    "russia": "ru",
+    "united kingdom": "gb",
+}
+
 
 class NewsAPIClient:
     """
@@ -211,12 +241,54 @@ class NewsAPIClient:
                     if article:
                         article['category'] = 'Business'
                 return articles['articles']
-            
+
             return []
-            
+
         except Exception as e:
             print(f"Error fetching business headlines: {str(e)}")
             return []
+
+    def get_country_supply_chain_news(self, country: str, days_back: int = 7) -> List[Dict]:
+        """Fetch supply-chain related news for a specific country."""
+
+        try:
+            to_date = datetime.now()
+            from_date = to_date - timedelta(days=days_back)
+            iso_code = COUNTRY_TO_ISO.get(country.lower())
+            keywords = " OR ".join(COUNTRY_KEYWORDS)
+            search_terms = [f'"{country}" ({keywords})']
+
+            if iso_code:
+                search_terms.append(f'"{iso_code.upper()}" ({keywords})')
+
+            query = " OR ".join(search_terms)
+            response = self.client.get_everything(
+                q=query,
+                from_param=from_date.strftime('%Y-%m-%d'),
+                to=to_date.strftime('%Y-%m-%d'),
+                language='en',
+                sort_by='relevancy',
+                page_size=10,
+            )
+
+            articles = response.get('articles', []) if response else []
+            for article in articles:
+                article['category'] = 'Country'
+                article['country'] = country
+            return articles
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"Error fetching country news for {country}: {exc}")
+            return []
+
+    def get_supply_chain_news_for_countries(
+        self, countries: List[str], days_back: int = 7
+    ) -> Dict[str, List[Dict]]:
+        """Fetch supply-chain news for a list of countries."""
+
+        results: Dict[str, List[Dict]] = {}
+        for country in countries:
+            results[country] = self.get_country_supply_chain_news(country, days_back)
+        return results
     
     def format_news_data(self, articles: List[Dict]) -> List[Dict]:
         """
@@ -318,3 +390,48 @@ def get_demo_news_data() -> Dict:
             }
         ]
     }
+
+
+def generate_demo_country_news(countries: List[str]) -> Dict[str, List[Dict]]:
+    """Generate structured demo country news items for offline usage."""
+
+    template_headlines = {
+        'High': [
+            'Nationwide port workers strike threatens exports',
+            'Government announces new tariffs impacting metal imports',
+        ],
+        'Medium': [
+            'Currency volatility raises import costs for manufacturers',
+            'Logistics delays reported amid severe weather warnings',
+        ],
+        'Low': [
+            'Infrastructure investment aims to boost supply chain resilience',
+            'Manufacturing sector reports stable output amid reforms',
+        ],
+    }
+
+    demo_news: Dict[str, List[Dict]] = {}
+    for idx, country in enumerate(countries):
+        if idx % 3 == 0:
+            severity = 'High'
+        elif idx % 3 == 1:
+            severity = 'Medium'
+        else:
+            severity = 'Low'
+
+        entries: List[Dict] = []
+        for headline in template_headlines[severity]:
+            entries.append(
+                {
+                    'title': f'{country}: {headline}',
+                    'description': headline,
+                    'country': country,
+                    'category': 'Country',
+                    'publishedAt': '2024-01-15T00:00:00Z',
+                    'severity': severity,
+                    'source': 'Demo News',
+                }
+            )
+        demo_news[country] = entries
+
+    return demo_news
