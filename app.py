@@ -1481,8 +1481,26 @@ elif page == "Forex Forecasting":
                 
                 # Generate dates for forecast
                 from datetime import datetime, timedelta
-                last_date = datetime.strptime(forecast_result['last_observation_date'], '%Y-%m-%d')
-                forecast_dates = [last_date + timedelta(days=i+1) for i in range(forecast_days)]
+                
+                # Handle both string and datetime types for last_observation_date
+                if isinstance(forecast_result['last_observation_date'], str):
+                    last_date = datetime.strptime(forecast_result['last_observation_date'], '%Y-%m-%d')
+                else:
+                    # If it's already a datetime object, use it directly
+                    last_date = forecast_result['last_observation_date']
+                    if hasattr(last_date, 'date'):
+                        last_date = last_date.date()
+                    if not isinstance(last_date, datetime):
+                        last_date = datetime.combine(last_date, datetime.min.time())
+                
+                # Generate forecast dates using Python datetime and convert to pandas
+                forecast_dates = []
+                for i in range(forecast_days):
+                    forecast_date = last_date + timedelta(days=i+1)
+                    forecast_dates.append(forecast_date)
+                
+                # Convert to pandas datetime
+                forecast_dates = pd.to_datetime(forecast_dates)
                 
                 # Create DataFrame for plotting
                 forecast_df = pd.DataFrame({
@@ -1506,6 +1524,10 @@ elif page == "Forex Forecasting":
                             'forecast_type': 'Historical'
                         })
                         
+                        # Ensure both DataFrames have the same datetime type and timezone
+                        hist_df['date'] = pd.to_datetime(hist_df['date']).dt.tz_localize(None)
+                        forecast_df['date'] = pd.to_datetime(forecast_df['date']).dt.tz_localize(None)
+                        
                         # Combine historical and forecast data
                         combined_df = pd.concat([hist_df, forecast_df], ignore_index=True)
                         
@@ -1521,12 +1543,18 @@ elif page == "Forex Forecasting":
                         )
                         
                         # Add vertical line to separate historical from forecast
-                        fig.add_vline(
-                            x=last_date,
-                            line_dash="dash",
-                            line_color="red",
-                            annotation_text="Forecast Start"
-                        )
+                        try:
+                            # Convert to string format for Plotly to avoid Timestamp arithmetic issues
+                            last_date_str = last_date.strftime('%Y-%m-%d')
+                            fig.add_vline(
+                                x=last_date_str,
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text="Forecast Start"
+                            )
+                        except Exception:
+                            # Skip vertical line if it fails
+                            pass
                         
                         fig.update_layout(
                             xaxis_title="Date",
