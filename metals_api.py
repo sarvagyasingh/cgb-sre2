@@ -22,17 +22,10 @@ class MetalsAPIClient:
         self.base_url = os.getenv('METALS_BASE_URL', 'https://api.metals.dev/v1')
         self.session = requests.Session()
         
-        # Debug information
-        st.write(f"🔍 Debug: API key loaded: {self.api_key[:10] if self.api_key else 'None'}...")
-        st.write(f"🔍 Debug: API key length: {len(self.api_key) if self.api_key else 0}")
-        
         if self.api_key and self.api_key != 'your_api_key_here':
             self.session.headers.update({
                 'Accept': 'application/json'
             })
-            st.success("✅ API key loaded successfully!")
-        else:
-            st.warning("⚠️ API key not configured. Please set METALS_API_KEY in your .env file")
     
     def get_metal_prices(self, metals=None, currency='USD'):
         """
@@ -84,10 +77,8 @@ class MetalsAPIClient:
             return formatted_data
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching metal prices: {str(e)}")
             return self._get_demo_data()
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_data()
     
     def get_historical_prices(self, metal, currency='USD', start_date=None, end_date=None):
@@ -147,10 +138,8 @@ class MetalsAPIClient:
                 return self._get_demo_historical_data(metal)
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching historical prices for {metal}: {str(e)}")
             return self._get_demo_historical_data(metal)
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_historical_data(metal)
     
     def get_metal_info(self, metal):
@@ -174,10 +163,8 @@ class MetalsAPIClient:
             return response.json()
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching metal info for {metal}: {str(e)}")
             return self._get_demo_metal_info(metal)
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_metal_info(metal)
     
     def _get_demo_data(self):

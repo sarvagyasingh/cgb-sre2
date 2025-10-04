@@ -116,7 +116,6 @@ class NewsAPIClient:
                                 all_articles.append(article)
                 
                 except Exception as e:
-                    print(f"Error fetching news for route {route}: {str(e)}")
                     continue
             
             # Remove duplicates based on title
@@ -130,7 +129,6 @@ class NewsAPIClient:
             return unique_articles[:10]  # Return top 10 articles
             
         except Exception as e:
-            print(f"Error fetching shipping news: {str(e)}")
             return []
     
     def get_metals_forex_news(self, metals: List[str], currencies: List[str], days_back: int = 7) -> List[Dict]:
@@ -173,7 +171,7 @@ class NewsAPIClient:
                             all_articles.append(article)
             
             except Exception as e:
-                print(f"Error fetching metals news: {str(e)}")
+                pass
             
             # Search for forex news
             forex_query = ' OR '.join([f'"{currency}" exchange rate' for currency in currencies])
@@ -196,7 +194,7 @@ class NewsAPIClient:
                             all_articles.append(article)
             
             except Exception as e:
-                print(f"Error fetching forex news: {str(e)}")
+                pass
             
             # Remove duplicates based on title
             seen_titles = set()
@@ -209,7 +207,6 @@ class NewsAPIClient:
             return unique_articles[:15]  # Return top 15 articles
             
         except Exception as e:
-            print(f"Error fetching metals/forex news: {str(e)}")
             return []
     
     def get_business_headlines(self, days_back: int = 7) -> List[Dict]:
@@ -245,7 +242,6 @@ class NewsAPIClient:
             return []
 
         except Exception as e:
-            print(f"Error fetching business headlines: {str(e)}")
             return []
 
     def get_country_supply_chain_news(self, country: str, days_back: int = 7) -> List[Dict]:
@@ -277,7 +273,6 @@ class NewsAPIClient:
                 article['country'] = country
             return articles
         except Exception as exc:  # pragma: no cover - defensive logging
-            print(f"Error fetching country news for {country}: {exc}")
             return []
 
     def get_supply_chain_news_for_countries(

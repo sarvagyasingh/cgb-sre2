@@ -22,13 +22,6 @@ class ForexAPIClient:
         self.base_url = os.getenv('OPENEXCHANGERATES_BASE_URL', 'https://openexchangerates.org/api')
         self.session = requests.Session()
         
-        st.write(f"🔍 Forex Debug: App ID loaded: {self.app_id[:10] if self.app_id else 'None'}...")
-        st.write(f"🔍 Forex Debug: App ID length: {len(self.app_id) if self.app_id else 0}")
-        
-        if self.app_id and self.app_id != 'your_app_id_here':
-            st.success("✅ Open Exchange Rates App ID loaded successfully!")
-        else:
-            st.warning("⚠️ Open Exchange Rates App ID not configured. Please set OPENEXCHANGERATES_APP_ID in your .env file")
     
     def get_latest_rates(self, base_currency='USD', symbols=None):
         """
@@ -72,10 +65,8 @@ class ForexAPIClient:
                 return self._get_demo_forex_data()
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching exchange rates: {str(e)}")
             return self._get_demo_forex_data()
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_forex_data()
     
     def get_historical_rates(self, date, base_currency='USD', symbols=None):
@@ -122,10 +113,8 @@ class ForexAPIClient:
                 return self._get_demo_historical_forex_data(date)
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching historical rates for {date}: {str(e)}")
             return self._get_demo_historical_forex_data(date)
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_historical_forex_data(date)
     
     def get_time_series(self, start_date, end_date, base_currency='USD', symbols=None):
@@ -175,10 +164,8 @@ class ForexAPIClient:
                 return self._get_demo_time_series_data(start_date, end_date)
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching time series data: {str(e)}")
             return self._get_demo_time_series_data(start_date, end_date)
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_time_series_data(start_date, end_date)
     
     def convert_currency(self, amount, from_currency, to_currency, date=None):
@@ -221,10 +208,8 @@ class ForexAPIClient:
             }
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error converting currency: {str(e)}")
             return self._get_demo_conversion_data(amount, from_currency, to_currency)
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_conversion_data(amount, from_currency, to_currency)
     
     def get_currencies(self):
@@ -254,10 +239,8 @@ class ForexAPIClient:
             }
             
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching currencies: {str(e)}")
             return self._get_demo_currencies_data()
         except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
             return self._get_demo_currencies_data()
     
     def _get_demo_forex_data(self):

@@ -66,67 +66,11 @@ if page == "Dashboard":
     with col4:
         st.metric("Cost Savings", "$12.5K", "5.2%")
 
-    # Streamlit Secrets Debug Information
-    with st.expander("🔧 Streamlit Secrets Debug", expanded=False):
-        st.write(f"**Streamlit Secrets Status:**")
-        try:
-            # Check if secrets are available
-            if hasattr(st, 'secrets'):
-                st.write(f"- Streamlit secrets available: True")
-                st.write(f"- METALS_API_KEY in secrets: {'METALS_API_KEY' in st.secrets}")
-                st.write(f"- OPENEXCHANGERATES_APP_ID in secrets: {'OPENEXCHANGERATES_APP_ID' in st.secrets}")
-                st.write(f"- NEWS_API_KEY in secrets: {'NEWS_API_KEY' in st.secrets}")
-                st.write(f"- OPENAI_API_KEY in secrets: {'OPENAI_API_KEY' in st.secrets}")
-                
-                # Show actual values (first few characters for security)
-                if 'METALS_API_KEY' in st.secrets:
-                    key = st.secrets['METALS_API_KEY']
-                    st.write(f"- METALS_API_KEY value: {key[:10]}..." if len(key) > 10 else f"- METALS_API_KEY value: {key}")
-            else:
-                st.write(f"- Streamlit secrets available: False")
-        except Exception as e:
-            st.write(f"- Error accessing secrets: {str(e)}")
 
 elif page == "Price Monitoring":
     st.header("📈 Price Monitoring")
     st.markdown("Track metal prices and commodity trends in real-time")
     
-    with st.expander("🔧 Debug Information", expanded=False):
-        import os
-        from dotenv import load_dotenv
-        
-        load_dotenv(override=True)
-        api_key = os.getenv('METALS_API_KEY')
-        
-        st.write(f"**Environment Variable Status:**")
-        st.write(f"- METALS_API_KEY loaded: {api_key is not None}")
-        st.write(f"- API key length: {len(api_key) if api_key else 0}")
-        st.write(f"- API key starts with NOH4JQ: {api_key.startswith('NOH4JQ') if api_key else False}")
-        st.write(f"- Current working directory: {os.getcwd()}")
-        st.write(f"- .env file exists: {os.path.exists('.env')}")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("🔄 Reload Environment Variables"):
-                load_dotenv(override=True)
-                st.rerun()
-        
-        with col2:
-            if st.button("🔄 Reset API Client"):
-                if 'metals_client' in st.session_state:
-                    del st.session_state.metals_client
-                if 'forex_client' in st.session_state:
-                    del st.session_state.forex_client
-                if 'imported_data' in st.session_state:
-                    del st.session_state.imported_data
-                st.rerun()
-        
-        with col3:
-            if st.button("🗑️ Clear All Cache"):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
     
     if 'metals_client' not in st.session_state:
         st.session_state.metals_client = MetalsAPIClient()
@@ -401,29 +345,6 @@ elif page == "Price Monitoring":
         else:
             st.info("👆 Please select currencies to monitor from the sidebar.")
     
-    # API Configuration Help
-    with st.expander("🔧 API Configuration Help"):
-        st.markdown("""
-        **To use real-time data:**
-        
-        **Metals Data (metals.dev):**
-        1. Get an API key from [metals.dev](https://metals.dev)
-        2. Add your API key to the `.env` file:
-           ```
-           METALS_API_KEY=your_actual_api_key_here
-           ```
-        
-        **Forex Data (Open Exchange Rates):**
-        1. Get an App ID from [Open Exchange Rates](https://openexchangerates.org)
-        2. Add your App ID to the `.env` file:
-           ```
-           OPENEXCHANGERATES_APP_ID=your_actual_app_id_here
-           ```
-        
-        3. Restart the Streamlit app
-        
-        **Current Status:** The app shows demo data when API keys are not configured. Configure your API keys to get real-time data.
-        """)
 
 elif page == "News Headlines":
     st.header("📰 News Headlines")
@@ -561,22 +482,6 @@ elif page == "News Headlines":
         else:
             st.info("No business news available for the selected time period.")
     
-    # API Configuration Help
-    with st.expander("🔧 News API Configuration Help"):
-        st.markdown("""
-        **To use real-time news data:**
-        
-        **News API:**
-        1. Get an API key from [NewsAPI](https://newsapi.org)
-        2. Add your API key to the `.env` file:
-           ```
-           NEWS_API_KEY=your_actual_api_key_here
-           ```
-        
-        3. Restart the Streamlit app
-        
-        **Current Status:** The app shows demo data when the News API key is not configured. Configure your API key to get real-time news headlines.
-        """)
 
 elif page == "Supplier Analysis":
     st.header("🏢 Supplier Analysis")
@@ -974,31 +879,7 @@ elif page == "Risk Alerts":
     else:
         st.caption("ℹ️ Rule-based fallback used (OpenAI not configured or unavailable)")
 
-    with st.expander("🔍 OpenAI Diagnostics", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("API Key Present", "Yes" if diag.get("api_key_present") else "No")
-        col2.metric("Client Ready", "Yes" if diag.get("is_available") else "No")
-        col3.metric("Model", str(diag.get("model")))
-        if diag.get("init_error"):
-            st.warning(f"Init error: {diag.get('init_error')}")
-        if diag.get("last_error"):
-            st.error(f"Last request error: {diag.get('last_error')}")
 
-    # Configuration help
-    with st.expander("🔧 Alerts Configuration Help"):
-        st.markdown(
-            """
-            To enable AI-generated alerts, add your OpenAI key to the `.env` file:
-            
-            ```
-            OPENAI_API_KEY=your_openai_api_key_here
-            # Optional: override model (defaults to gpt-4o-mini)
-            # OPENAI_MODEL=gpt-4o
-            ```
-            
-            If the key is missing, the app falls back to simple rule-based alerts.
-            """
-        )
 
 elif page == "Recommendations":
     st.header("💡 Recommendations")
@@ -1726,13 +1607,6 @@ elif page == "Forex Forecasting":
         st.error(f"Error loading model: {str(e)}")
         st.info("Please ensure the model artifacts exist or retrain the model.")
         
-        # Show more detailed error information
-        with st.expander("🔍 Debug Information"):
-            st.write(f"**Error details:** {str(e)}")
-            st.write(f"**Model path:** {model_path}")
-            st.write(f"**Scaler path:** {scaler_path}")
-            st.write(f"**Model exists:** {model_path.exists()}")
-            st.write(f"**Scaler exists:** {scaler_path.exists()}")
 
 # Footer
 st.markdown("---")
