@@ -1486,7 +1486,7 @@ elif page == "Forex Forecasting":
                 
                 # Create DataFrame for plotting
                 forecast_df = pd.DataFrame({
-                    'date': forecast_dates,
+                    'date': pd.to_datetime(forecast_dates),  # Convert to pandas datetime
                     'predicted_rate': forecast_result['predictions'],
                     'forecast_type': 'Forecast'
                 })
