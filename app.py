@@ -18,6 +18,7 @@ from supplier_risk import (
     compute_supplier_risk_scores,
     load_supplier_dataset,
 )
+from openai_client import OpenAIAlertClient
 # Import forecasting functions with error handling
 try:
     from forex_forecast import forecast_next_rate, load_model_bundle, ArtefactMissingError
@@ -810,16 +811,625 @@ elif page == "Supplier Analysis":
 elif page == "Risk Alerts":
     st.header("⚠️ Risk Alerts")
     st.markdown("Get notified about potential supply chain disruptions")
-    
-    # Placeholder for risk alerts content
-    st.info("Risk alerts functionality will be implemented here")
+
+    # Controls
+    st.sidebar.subheader("🔧 Alerts Controls")
+    news_lookback = st.sidebar.slider(
+        "News lookback (days)", min_value=3, max_value=30, value=10,
+        help="Days of headlines included in country risk signal",
+    )
+    supplier_top_n = st.sidebar.slider(
+        "Max suppliers in context", min_value=3, max_value=20, value=8,
+        help="How many highest-risk suppliers to include in alert context",
+    )
+    fx_abs_threshold = st.sidebar.number_input(
+        "FX day-over-day move threshold (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1,
+        help="Minimum absolute % change to flag FX moves",
+    )
+    include_forecast = st.sidebar.checkbox(
+        "Include LSTM forecast deltas (if available)", value=False,
+        help="Adds short-horizon forecast moves when model artifacts exist",
+    )
+
+    # Build structured context
+    context = {
+        "generated_at": datetime.now().strftime('%Y-%m-%d %H:%M'),
+        "base_currency": "EUR",
+    }
+
+    # 1) Supplier risk context
+    try:
+        supplier_df = load_supplier_dataset("data/raw_material_suppliers_timeseries.csv")
+        if supplier_df is not None and not supplier_df.empty:
+            metrics_df = aggregate_supplier_metrics(supplier_df)
+
+            # Country news scores feeding into supplier scoring
+            countries = metrics_df["country"].dropna().unique().tolist()
+            try:
+                news_client = NewsAPIClient()
+                country_news = news_client.get_supply_chain_news_for_countries(
+                    countries, days_back=news_lookback
+                )
+            except Exception:
+                country_news = generate_demo_country_news(countries)
+
+            country_news_scores = compute_country_news_scores(country_news)
+            supplier_scores, _supplier_results = compute_supplier_risk_scores(
+                metrics_df, country_news_scores
+            )
+
+            # Top high-risk suppliers
+            top_suppliers = (
+                supplier_scores
+                .sort_values("risk_score", ascending=False)
+                .head(supplier_top_n)
+            )
+            context["suppliers_high_risk"] = [
+                {
+                    "supplier_name": row.supplier_name,
+                    "country": row.country,
+                    "risk_score": float(row.risk_score),
+                    "risk_level": row.risk_level,
+                    "top_factor": row.top_factor,
+                    # Provide both numeric news score and label
+                    "news_score": float(country_news_scores.get(row.country, {}).get("score", 0.0)),
+                    "news_severity_label": str(row.news_severity),
+                }
+                for _, row in top_suppliers.iterrows()
+            ]
+
+            # Country hotspots from news
+            hotspots = [
+                {
+                    "country": c,
+                    "news_score": float(s.get("score", 0.0)),
+                    "severity_label": s.get("severity", "Low"),
+                }
+                for c, s in country_news_scores.items()
+            ]
+            hotspots = sorted(hotspots, key=lambda x: x["news_score"], reverse=True)[:5]
+            context["country_news_hotspots"] = hotspots
+        else:
+            context["suppliers_high_risk"] = []
+            context["country_news_hotspots"] = []
+    except Exception as exc:
+        st.warning(f"Supplier context error: {exc}")
+        context["suppliers_high_risk"] = []
+        context["country_news_hotspots"] = []
+
+    # 2) FX spikes from latest historical file and optional forecast deltas
+    fx_spikes = []
+    try:
+        hist = pd.read_csv("data/daily_forex_rates.csv", parse_dates=["date"])  # columns: date, base_currency, currency, exchange_rate
+        # Focus on latest two dates per currency for EUR base
+        eur_hist = hist[(hist["base_currency"] == "EUR")].copy()
+        latest_date = eur_hist["date"].max()
+        prior_date = eur_hist[eur_hist["date"] < latest_date]["date"].max()
+        latest = eur_hist[eur_hist["date"] == latest_date]
+        prior = eur_hist[eur_hist["date"] == prior_date][["currency", "exchange_rate"]].rename(columns={"exchange_rate": "exchange_rate_prior"})
+        joined = latest.merge(prior, on="currency", how="left")
+        joined["pct_change_1d"] = (joined["exchange_rate"] - joined["exchange_rate_prior"]) / joined["exchange_rate_prior"] * 100.0
+        moved = joined[joined["pct_change_1d"].abs() >= fx_abs_threshold]
+        for _, r in moved.sort_values("pct_change_1d", key=lambda s: s.abs(), ascending=False).head(8).iterrows():
+            fx_spikes.append({
+                "currency": r["currency"],
+                "base_currency": "EUR",
+                "pct_change_1d": float(r["pct_change_1d"]),
+                "last_rate": float(r["exchange_rate"]),
+                "date": latest_date.strftime('%Y-%m-%d'),
+            })
+    except Exception as exc:
+        st.info(f"FX spike detection skipped: {exc}")
+
+    # Optional: include LSTM forecast delta vs last observation (short horizon)
+    if include_forecast:
+        try:
+            if 'FORECASTING_AVAILABLE' in globals() and FORECASTING_AVAILABLE:
+                # Try a short 3-day horizon for a few common currencies
+                tracked = ["USD", "GBP", "JPY"]
+                for cur in tracked:
+                    try:
+                        result = forecast_next_rate(steps=3)
+                        if result and result.get('currency') == cur:
+                            last_obs = float(result.get('last_observation', 0.0))
+                            if result.get('predictions'):
+                                day3 = float(result['predictions'][-1])
+                                pct = (day3 - last_obs) / last_obs * 100.0 if last_obs else 0.0
+                                fx_spikes.append({
+                                    "currency": cur,
+                                    "base_currency": "EUR",
+                                    "forecast_pct_change_3d": pct,
+                                })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    context["forex_spikes"] = fx_spikes
+
+    # Generate alerts
+    client = OpenAIAlertClient()
+    alerts = client.generate_alerts(context, max_alerts=10)
+
+    if alerts:
+        st.subheader("📣 Alerts")
+        for a in alerts:
+            st.markdown(f"- {a}")
+    else:
+        st.info("No high-priority alerts based on current context.")
+
+    # Indicate whether OpenAI API was used
+    diag = client.diagnostics()
+    if diag.get("last_used_openai"):
+        st.caption("✅ OpenAI API used to generate alerts")
+    else:
+        st.caption("ℹ️ Rule-based fallback used (OpenAI not configured or unavailable)")
+
+    with st.expander("🔍 OpenAI Diagnostics", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("API Key Present", "Yes" if diag.get("api_key_present") else "No")
+        col2.metric("Client Ready", "Yes" if diag.get("is_available") else "No")
+        col3.metric("Model", str(diag.get("model")))
+        if diag.get("init_error"):
+            st.warning(f"Init error: {diag.get('init_error')}")
+        if diag.get("last_error"):
+            st.error(f"Last request error: {diag.get('last_error')}")
+
+    # Configuration help
+    with st.expander("🔧 Alerts Configuration Help"):
+        st.markdown(
+            """
+            To enable AI-generated alerts, add your OpenAI key to the `.env` file:
+            
+            ```
+            OPENAI_API_KEY=your_openai_api_key_here
+            # Optional: override model (defaults to gpt-4o-mini)
+            # OPENAI_MODEL=gpt-4o
+            ```
+            
+            If the key is missing, the app falls back to simple rule-based alerts.
+            """
+        )
 
 elif page == "Recommendations":
     st.header("💡 Recommendations")
-    st.markdown("AI-powered sourcing recommendations and alternatives")
+    st.markdown("AI-powered sourcing recommendations and diversification strategies")
     
-    # Placeholder for recommendations content
-    st.info("Recommendations functionality will be implemented here")
+    # Load supplier data
+    @st.cache_data(show_spinner=False)
+    def load_supplier_data() -> pd.DataFrame:
+        return load_supplier_dataset("data/raw_material_suppliers_timeseries.csv")
+
+    supplier_df = load_supplier_data()
+
+    if supplier_df.empty:
+        st.warning("Supplier dataset is empty. Please upload data to view recommendations.")
+    else:
+        # Sidebar controls
+        st.sidebar.subheader("🔧 Recommendation Filters")
+        
+        # Material selection
+        material_options = sorted(supplier_df["material"].dropna().unique())
+        selected_material = st.sidebar.selectbox(
+            "Select Material",
+            options=material_options,
+            help="Choose the material to get recommendations for"
+        )
+        
+        # Country selection
+        country_options = sorted(supplier_df["country"].dropna().unique())
+        selected_countries = st.sidebar.multiselect(
+            "Include Countries",
+            options=country_options,
+            default=country_options,
+            help="Select countries to include in recommendations"
+        )
+        
+        # Ranking weights
+        st.sidebar.subheader("⚖️ Ranking Weights")
+        cost_weight = st.sidebar.slider(
+            "Cost Importance", 
+            min_value=0.0, 
+            max_value=1.0, 
+            value=0.4, 
+            step=0.1,
+            help="How much to weight cost in the ranking"
+        )
+        reliability_weight = st.sidebar.slider(
+            "Reliability Importance", 
+            min_value=0.0, 
+            max_value=1.0, 
+            value=0.3, 
+            step=0.1,
+            help="How much to weight reliability (on-time delivery, quality)"
+        )
+        risk_weight = st.sidebar.slider(
+            "Risk Importance", 
+            min_value=0.0, 
+            max_value=1.0, 
+            value=0.3, 
+            step=0.1,
+            help="How much to weight risk factors"
+        )
+        
+        # Normalize weights
+        total_weight = cost_weight + reliability_weight + risk_weight
+        if total_weight > 0:
+            cost_weight /= total_weight
+            reliability_weight /= total_weight
+            risk_weight /= total_weight
+        
+        # Diversification options
+        st.sidebar.subheader("🌍 Diversification Options")
+        max_suppliers = st.sidebar.slider(
+            "Max Suppliers per Strategy",
+            min_value=2,
+            max_value=10,
+            value=5,
+            help="Maximum number of suppliers to include in diversification strategies"
+        )
+        
+        min_countries = st.sidebar.slider(
+            "Min Countries for Diversification",
+            min_value=2,
+            max_value=5,
+            value=2,
+            help="Minimum number of countries to include in diversification strategies"
+        )
+        
+        # Filter data
+        filtered_df = supplier_df[supplier_df["material"] == selected_material]
+        if selected_countries:
+            filtered_df = filtered_df[filtered_df["country"].isin(selected_countries)]
+        
+        if filtered_df.empty:
+            st.warning(f"No suppliers found for {selected_material} in selected countries.")
+        else:
+            # Calculate supplier metrics
+            metrics_df = aggregate_supplier_metrics(filtered_df)
+            
+            # Get country news scores for risk assessment
+            countries = metrics_df["country"].dropna().unique().tolist()
+            try:
+                news_client = NewsAPIClient()
+                country_news = news_client.get_supply_chain_news_for_countries(
+                    countries, days_back=10
+                )
+            except Exception:
+                country_news = generate_demo_country_news(countries)
+            
+            country_news_scores = compute_country_news_scores(country_news)
+            supplier_scores, supplier_results = compute_supplier_risk_scores(
+                metrics_df, country_news_scores
+            )
+            
+            # Calculate composite ranking scores
+            def calculate_composite_score(row):
+                # Cost score (lower is better) - normalize and invert
+                cost_score = 1 - (row['avg_price_per_unit'] - metrics_df['avg_price_per_unit'].min()) / (metrics_df['avg_price_per_unit'].max() - metrics_df['avg_price_per_unit'].min())
+                
+                # Reliability score (higher is better)
+                reliability_score = (row['on_time_rate'] + (1 - row['defect_rate'])) / 2
+                
+                # Risk score (lower is better) - invert the risk score
+                risk_score = 1 - (row['risk_score'] / 100)
+                
+                # Weighted composite score
+                composite = (cost_weight * cost_score + 
+                           reliability_weight * reliability_score + 
+                           risk_weight * risk_score)
+                
+                return composite
+            
+            supplier_scores['composite_score'] = supplier_scores.apply(calculate_composite_score, axis=1)
+            supplier_scores['rank'] = supplier_scores['composite_score'].rank(ascending=False, method='dense').astype(int)
+            
+            # Sort by composite score
+            ranked_suppliers = supplier_scores.sort_values('composite_score', ascending=False)
+            
+            # Display top suppliers
+            st.subheader("🏆 Top Supplier Rankings")
+            st.markdown(f"*Ranked by cost, reliability, and risk for {selected_material}*")
+            
+            # Create display columns
+            display_cols = [
+                'rank', 'supplier_name', 'country', 'composite_score', 
+                'avg_price_per_unit', 'on_time_rate', 'defect_rate', 'risk_score', 'risk_level'
+            ]
+            
+            display_df = ranked_suppliers[display_cols].copy()
+            display_df['composite_score'] = display_df['composite_score'].round(3)
+            display_df['avg_price_per_unit'] = display_df['avg_price_per_unit'].round(2)
+            display_df['on_time_rate'] = (display_df['on_time_rate'] * 100).round(1)
+            display_df['defect_rate'] = (display_df['defect_rate'] * 100).round(2)
+            display_df['risk_score'] = display_df['risk_score'].round(1)
+            
+            # Rename columns for display
+            display_df.columns = [
+                'Rank', 'Supplier', 'Country', 'Score', 
+                'Avg Price/Unit', 'On-Time %', 'Defect %', 'Risk Score', 'Risk Level'
+            ]
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                column_config={
+                    "Score": st.column_config.ProgressColumn(
+                        "Score", format="%.3f", min_value=0, max_value=1
+                    ),
+                    "On-Time %": st.column_config.ProgressColumn(
+                        "On-Time %", format="%.1f%%", min_value=0, max_value=100
+                    ),
+                    "Defect %": st.column_config.NumberColumn("Defect %", format="%.2f%%"),
+                    "Risk Score": st.column_config.NumberColumn("Risk Score", format="%.1f"),
+                }
+            )
+            
+            # Detailed analysis for top supplier
+            st.subheader("🔍 Top Supplier Analysis")
+            top_supplier = ranked_suppliers.iloc[0]
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Supplier", top_supplier['supplier_name'])
+            with col2:
+                st.metric("Country", top_supplier['country'])
+            with col3:
+                st.metric("Composite Score", f"{top_supplier['composite_score']:.3f}")
+            with col4:
+                st.metric("Risk Level", top_supplier['risk_level'])
+            
+            # Cost vs Quality scatter plot
+            st.subheader("📊 Cost vs Quality Analysis")
+            
+            fig = px.scatter(
+                ranked_suppliers,
+                x='avg_price_per_unit',
+                y='on_time_rate',
+                size='total_spend',
+                color='risk_level',
+                hover_data=['supplier_name', 'country', 'defect_rate', 'risk_score'],
+                title=f"Cost vs Quality for {selected_material} Suppliers",
+                labels={
+                    'avg_price_per_unit': 'Average Price per Unit (USD)',
+                    'on_time_rate': 'On-Time Delivery Rate',
+                    'total_spend': 'Total Spend (USD)'
+                }
+            )
+            
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Diversification strategies
+            st.subheader("🌍 Diversification Strategies")
+            st.markdown("Explore different sourcing strategies to reduce risk and improve resilience")
+            
+            # Strategy 1: Geographic Diversification
+            st.markdown("### 🌏 Geographic Diversification")
+            
+            # Group by country and get top suppliers per country
+            country_suppliers = {}
+            for country in ranked_suppliers['country'].unique():
+                country_data = ranked_suppliers[ranked_suppliers['country'] == country]
+                country_suppliers[country] = country_data.head(2)  # Top 2 per country
+            
+            # Create diversification table
+            diversification_data = []
+            for country, suppliers in country_suppliers.items():
+                for _, supplier in suppliers.iterrows():
+                    diversification_data.append({
+                        'Country': country,
+                        'Supplier': supplier['supplier_name'],
+                        'Score': supplier['composite_score'],
+                        'Price': supplier['avg_price_per_unit'],
+                        'Risk': supplier['risk_level'],
+                        'On-Time %': supplier['on_time_rate'] * 100
+                    })
+            
+            if diversification_data:
+                geo_df = pd.DataFrame(diversification_data)
+                geo_df = geo_df.sort_values(['Country', 'Score'], ascending=[True, False])
+                
+                st.markdown("**Top suppliers by country:**")
+                st.dataframe(
+                    geo_df,
+                    use_container_width=True,
+                    column_config={
+                        "Score": st.column_config.ProgressColumn(
+                            "Score", format="%.3f", min_value=0, max_value=1
+                        ),
+                        "On-Time %": st.column_config.ProgressColumn(
+                            "On-Time %", format="%.1f%%", min_value=0, max_value=100
+                        ),
+                    }
+                )
+                
+                # Calculate diversification metrics
+                countries_included = geo_df['Country'].nunique()
+                avg_score = geo_df['Score'].mean()
+                price_range = geo_df['Price'].max() - geo_df['Price'].min()
+                price_cv = geo_df['Price'].std() / geo_df['Price'].mean()
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Countries", countries_included)
+                with col2:
+                    st.metric("Avg Score", f"{avg_score:.3f}")
+                with col3:
+                    st.metric("Price Range", f"${price_range:.0f}")
+                with col4:
+                    st.metric("Price CV", f"{price_cv:.2f}")
+                
+                # Trade-offs analysis
+                st.markdown("**Trade-offs of Geographic Diversification:**")
+                
+                if countries_included >= min_countries:
+                    st.success("✅ **Pros:**")
+                    st.markdown("- Reduced country-specific risk exposure")
+                    st.markdown("- Better resilience to regional disruptions")
+                    st.markdown("- Access to different cost structures")
+                    
+                    if price_cv > 0.1:
+                        st.warning("⚠️ **Cons:**")
+                        st.markdown("- Price variability across suppliers")
+                        st.markdown("- Increased complexity in supplier management")
+                        st.markdown("- Potential quality inconsistencies")
+                    else:
+                        st.info("ℹ️ **Cons:**")
+                        st.markdown("- Increased complexity in supplier management")
+                        st.markdown("- Potential quality inconsistencies")
+                else:
+                    st.warning("⚠️ **Limited diversification:** Not enough countries available for effective geographic diversification.")
+            
+            # Strategy 2: Risk-Based Diversification
+            st.markdown("### ⚖️ Risk-Based Diversification")
+            
+            # Categorize suppliers by risk level
+            low_risk = ranked_suppliers[ranked_suppliers['risk_level'] == 'Low'].head(3)
+            medium_risk = ranked_suppliers[ranked_suppliers['risk_level'] == 'Medium'].head(2)
+            high_risk = ranked_suppliers[ranked_suppliers['risk_level'] == 'High'].head(1)
+            
+            risk_strategy_data = []
+            for risk_level, suppliers in [('Low Risk', low_risk), ('Medium Risk', medium_risk), ('High Risk', high_risk)]:
+                for _, supplier in suppliers.iterrows():
+                    risk_strategy_data.append({
+                        'Risk Category': risk_level,
+                        'Supplier': supplier['supplier_name'],
+                        'Country': supplier['country'],
+                        'Score': supplier['composite_score'],
+                        'Price': supplier['avg_price_per_unit'],
+                        'Risk Score': supplier['risk_score']
+                    })
+            
+            if risk_strategy_data:
+                risk_df = pd.DataFrame(risk_strategy_data)
+                
+                st.markdown("**Balanced risk portfolio:**")
+                st.dataframe(
+                    risk_df,
+                    use_container_width=True,
+                    column_config={
+                        "Score": st.column_config.ProgressColumn(
+                            "Score", format="%.3f", min_value=0, max_value=1
+                        ),
+                        "Risk Score": st.column_config.NumberColumn("Risk Score", format="%.1f"),
+                    }
+                )
+                
+                # Risk diversification metrics
+                risk_categories = risk_df['Risk Category'].nunique()
+                avg_risk_score = risk_df['Risk Score'].mean()
+                price_std = risk_df['Price'].std()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Risk Categories", risk_categories)
+                with col2:
+                    st.metric("Avg Risk Score", f"{avg_risk_score:.1f}")
+                with col3:
+                    st.metric("Price Std Dev", f"${price_std:.0f}")
+                
+                st.markdown("**Trade-offs of Risk-Based Diversification:**")
+                st.success("✅ **Pros:**")
+                st.markdown("- Balanced exposure across risk levels")
+                st.markdown("- Maintains some high-performing suppliers")
+                st.markdown("- Reduces overall portfolio risk")
+                
+                st.info("ℹ️ **Cons:**")
+                st.markdown("- Includes some higher-risk suppliers")
+                st.markdown("- May increase average cost")
+                st.markdown("- Requires careful monitoring of high-risk suppliers")
+            
+            # Strategy 3: Cost-Optimized Diversification
+            st.markdown("### 💰 Cost-Optimized Diversification")
+            
+            # Get suppliers with good balance of cost and quality
+            cost_optimized = ranked_suppliers[
+                (ranked_suppliers['composite_score'] >= ranked_suppliers['composite_score'].quantile(0.3)) &
+                (ranked_suppliers['avg_price_per_unit'] <= ranked_suppliers['avg_price_per_unit'].quantile(0.7))
+            ].head(max_suppliers)
+            
+            if not cost_optimized.empty:
+                st.markdown("**Cost-effective suppliers with good quality:**")
+                cost_display = cost_optimized[['supplier_name', 'country', 'composite_score', 'avg_price_per_unit', 'on_time_rate', 'risk_level']].copy()
+                cost_display['on_time_rate'] = (cost_display['on_time_rate'] * 100).round(1)
+                cost_display.columns = ['Supplier', 'Country', 'Score', 'Price/Unit', 'On-Time %', 'Risk Level']
+                
+                st.dataframe(
+                    cost_display,
+                    use_container_width=True,
+                    column_config={
+                        "Score": st.column_config.ProgressColumn(
+                            "Score", format="%.3f", min_value=0, max_value=1
+                        ),
+                        "On-Time %": st.column_config.ProgressColumn(
+                            "On-Time %", format="%.1f%%", min_value=0, max_value=100
+                        ),
+                    }
+                )
+                
+                # Cost optimization metrics
+                avg_cost = cost_optimized['avg_price_per_unit'].mean()
+                cost_savings = ranked_suppliers['avg_price_per_unit'].mean() - avg_cost
+                cost_savings_pct = (cost_savings / ranked_suppliers['avg_price_per_unit'].mean()) * 100
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Avg Cost", f"${avg_cost:.0f}")
+                with col2:
+                    st.metric("Cost Savings", f"${cost_savings:.0f}")
+                with col3:
+                    st.metric("Savings %", f"{cost_savings_pct:.1f}%")
+                
+                st.markdown("**Trade-offs of Cost-Optimized Diversification:**")
+                st.success("✅ **Pros:**")
+                st.markdown("- Significant cost savings potential")
+                st.markdown("- Maintains quality standards")
+                st.markdown("- Good value for money")
+                
+                st.warning("⚠️ **Cons:**")
+                st.markdown("- May have higher risk exposure")
+                st.markdown("- Potential quality variability")
+                st.markdown("- May require more supplier management")
+            
+            # Implementation recommendations
+            st.subheader("🚀 Implementation Recommendations")
+            
+            st.markdown("### Next Steps:")
+            st.markdown("1. **Start with the top-ranked supplier** for immediate implementation")
+            st.markdown("2. **Develop backup suppliers** from the diversification strategies")
+            st.markdown("3. **Monitor performance** using the risk scoring system")
+            st.markdown("4. **Adjust strategy** based on market conditions and supplier performance")
+            
+            # Export recommendations
+            if st.button("📥 Export Recommendations", type="primary"):
+                # Create comprehensive recommendations export
+                export_data = []
+                for _, supplier in ranked_suppliers.iterrows():
+                    export_data.append({
+                        'Rank': supplier['rank'],
+                        'Supplier': supplier['supplier_name'],
+                        'Country': supplier['country'],
+                        'Material': selected_material,
+                        'Composite Score': supplier['composite_score'],
+                        'Price per Unit': supplier['avg_price_per_unit'],
+                        'On-Time Rate': supplier['on_time_rate'],
+                        'Defect Rate': supplier['defect_rate'],
+                        'Risk Score': supplier['risk_score'],
+                        'Risk Level': supplier['risk_level'],
+                        'Total Orders': supplier['total_orders'],
+                        'Total Spend': supplier['total_spend']
+                    })
+                
+                export_df = pd.DataFrame(export_data)
+                csv = export_df.to_csv(index=False)
+                
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"supplier_recommendations_{selected_material}_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
 
 elif page == "Forex Forecasting":
     st.header("🔮 Forex Forecasting")
