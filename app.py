@@ -66,6 +66,27 @@ if page == "Dashboard":
     with col4:
         st.metric("Cost Savings", "$12.5K", "5.2%")
 
+    # Streamlit Secrets Debug Information
+    with st.expander("🔧 Streamlit Secrets Debug", expanded=False):
+        st.write(f"**Streamlit Secrets Status:**")
+        try:
+            # Check if secrets are available
+            if hasattr(st, 'secrets'):
+                st.write(f"- Streamlit secrets available: True")
+                st.write(f"- METALS_API_KEY in secrets: {'METALS_API_KEY' in st.secrets}")
+                st.write(f"- OPENEXCHANGERATES_APP_ID in secrets: {'OPENEXCHANGERATES_APP_ID' in st.secrets}")
+                st.write(f"- NEWS_API_KEY in secrets: {'NEWS_API_KEY' in st.secrets}")
+                st.write(f"- OPENAI_API_KEY in secrets: {'OPENAI_API_KEY' in st.secrets}")
+                
+                # Show actual values (first few characters for security)
+                if 'METALS_API_KEY' in st.secrets:
+                    key = st.secrets['METALS_API_KEY']
+                    st.write(f"- METALS_API_KEY value: {key[:10]}..." if len(key) > 10 else f"- METALS_API_KEY value: {key}")
+            else:
+                st.write(f"- Streamlit secrets available: False")
+        except Exception as e:
+            st.write(f"- Error accessing secrets: {str(e)}")
+
 elif page == "Price Monitoring":
     st.header("📈 Price Monitoring")
     st.markdown("Track metal prices and commodity trends in real-time")
