@@ -19,13 +19,11 @@ from supplier_risk import (
     load_supplier_dataset,
 )
 from openai_client import OpenAIAlertClient
-# Import forecasting functions with error handling
 try:
     from forex_forecast import forecast_next_rate, load_model_bundle, ArtefactMissingError
     FORECASTING_AVAILABLE = True
 except Exception as e:
     FORECASTING_AVAILABLE = False
-    # Create dummy functions to prevent errors
     def forecast_next_rate(*args, **kwargs):
         raise ImportError("Forecasting not available - TensorFlow error")
     def load_model_bundle(*args, **kwargs):
@@ -33,7 +31,6 @@ except Exception as e:
     class ArtefactMissingError(Exception):
         pass
 
-# Page configuration
 st.set_page_config(
     page_title="Supplier Risk & Recommendation Engine",
     page_icon="🏭",
@@ -41,24 +38,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Main title and description
 st.title("🏭 Supplier Risk & Recommendation Engine")
 st.markdown("**AI-powered decision support for SMEs in exports and manufacturing**")
 st.markdown("Monitor raw material costs, score supplier reliability, and get smart sourcing recommendations.")
 
-# Sidebar navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.selectbox(
     "Choose a page",
     ["Dashboard", "Price Monitoring", "News Headlines", "Supplier Analysis", "Risk Alerts", "Recommendations", "Forex Forecasting"]
 )
 
-# Main content area
 if page == "Dashboard":
     st.header("📊 Dashboard")
     st.markdown("Overview of your supply chain health and key metrics")
     
-    # Placeholder for dashboard content
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -77,7 +70,6 @@ elif page == "Price Monitoring":
     st.header("📈 Price Monitoring")
     st.markdown("Track metal prices and commodity trends in real-time")
     
-    # Debug section
     with st.expander("🔧 Debug Information", expanded=False):
         import os
         from dotenv import load_dotenv
@@ -101,24 +93,20 @@ elif page == "Price Monitoring":
         
         with col2:
             if st.button("🔄 Reset API Client"):
-                # Clear all API clients from session state
                 if 'metals_client' in st.session_state:
                     del st.session_state.metals_client
                 if 'forex_client' in st.session_state:
                     del st.session_state.forex_client
-                # Clear any cached data
                 if 'imported_data' in st.session_state:
                     del st.session_state.imported_data
                 st.rerun()
         
         with col3:
             if st.button("🗑️ Clear All Cache"):
-                # Clear all session state
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
     
-    # Initialize API clients
     if 'metals_client' not in st.session_state:
         st.session_state.metals_client = MetalsAPIClient()
     

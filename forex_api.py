@@ -22,7 +22,6 @@ class ForexAPIClient:
         self.base_url = os.getenv('OPENEXCHANGERATES_BASE_URL', 'https://openexchangerates.org/api')
         self.session = requests.Session()
         
-        # Debug information
         st.write(f"🔍 Forex Debug: App ID loaded: {self.app_id[:10] if self.app_id else 'None'}...")
         st.write(f"🔍 Forex Debug: App ID length: {len(self.app_id) if self.app_id else 0}")
         

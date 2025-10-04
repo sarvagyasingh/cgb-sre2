@@ -10,5 +10,3 @@ __pycache__/
 .DS_Store
 
 # Model artefacts generated during forex training
-models/forex_lstm.keras
-models/forex_scaler.pkl
