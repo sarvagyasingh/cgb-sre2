@@ -6,6 +6,7 @@ __pycache__/
 # Virtual environments
 .venv/
 .env.local
+.env
 
 # Model artefacts generated during forex training
 models/forex_lstm.keras
